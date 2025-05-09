@@ -94,6 +94,57 @@ def join_all_tables() -> pd.DataFrame:
 
     return df
 
-test = join_all_tables()
+def played_hero_transformation(group_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Transform the played hero data for each team in a match.
 
-print(test.columns)
+    Args:
+        group_df (pd.DataFrame): DataFrame containing the played hero data.
+
+    Returns:
+        pd.DataFrame: Transformed DataFrame with played hero data.
+    """
+    tank_played = group_df[group_df.role == "tank"]
+    dps_played = group_df[group_df.role == "dps"].head(2)
+    support_played = group_df[group_df.role == "sup"].head(2)
+    map_name = group_df["map_name"].values[0]
+    is_win = group_df["is_win"].values[0]
+
+
+
+    transformed_df = pd.DataFrame({
+        "map_name": map_name,
+        "is_win": is_win,
+        "tank_hero": tank_played["hero_name"].values[0],
+        "dps_heroes": dps_played["hero_name"].values.tolist(),
+        "support_heroes": support_played["hero_name"].values.tolist()
+    })
+
+
+    return transformed_df.reset_index(drop=True)
+
+def create_composition_table() -> pd.DataFrame:
+    """
+    Create a DataFrame containing the hero composition for each map.
+
+    Returns:
+        pd.DataFrame: DataFrame containing the hero composition.
+    """
+    df = join_all_tables()
+
+    # group table by matchmap_id and round_id
+
+    all_columns = list(df.columns)
+
+    df = df.groupby(["match_map_id", "round_id", "team_id"])
+
+    transformed_df = df.apply(played_hero_transformation)
+
+    return transformed_df
+
+test = create_composition_table()
+
+print(test.head(10))
+
+
+
