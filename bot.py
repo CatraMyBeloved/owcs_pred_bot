@@ -16,15 +16,17 @@ import asqlite
 import twitchio
 from twitchio.ext import commands
 from twitchio import eventsub
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 LOGGER: logging.Logger = logging.getLogger("Bot")
 
-CLIENT_ID: str = "ncz4a45mcvn0likuwbhytnr07wci7a" # The CLIENT ID from the Twitch Dev Console
-CLIENT_SECRET: str = "geq7wye8883p6uobra6ofrzkqlpiak" # The CLIENT SECRET from the Twitch Dev Console
-BOT_ID = "1308996762"  # The Account ID of the bot user...
-OWNER_ID = "404521554"  # Your personal User ID
-
+CLIENT_ID: str = os.getenv("TWITCH_CLIENT_ID")
+CLIENT_SECRET: str = os.getenv("TWITCH_CLIENT_SECRET")
+BOT_ID = os.getenv("TWITCH_BOT_ID")
+OWNER_ID = os.getenv("TWITCH_OWNER_ID")
 
 
 
