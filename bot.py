@@ -1,38 +1,52 @@
-import os
-import pickle
-from dotenv import load_dotenv
-import pandas as pd
-from twitchio.ext import commands
+import asyncio
+import logging
+import sqlite3
 import joblib
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, confusion_matrix
+import os
 
-load_dotenv()
+import asqlite
+import twitchio
+from twitchio.ext import commands
+from twitchio import eventsub
 
 
-# Bot setup
+LOGGER: logging.Logger = logging.getLogger("Bot")
+
+CLIENT_ID: str = "ncz4a45mcvn0likuwbhytnr07wci7a" # The CLIENT ID from the Twitch Dev Console
+CLIENT_SECRET: str = "geq7wye8883p6uobra6ofrzkqlpiak" # The CLIENT SECRET from the Twitch Dev Console
+BOT_ID = "1308996762"  # The Account ID of the bot user...
+OWNER_ID = "404521554"  # Your personal User ID
+
+
+
+
 class Bot(commands.Bot):
-    def __init__(self):
+    def __init__(self, *, token_database: asqlite.Pool) -> None:
+        self.token_database = token_database
         super().__init__(
-            token=os.environ['TMI_TOKEN'],  # Your OAuth token
-            client_id=os.environ['CLIENT_ID'],  # Your client ID
-            nick=os.environ['BOT_NICK'],  # Your bot's username
-            prefix='!',  # Command prefix
-            initial_channels=[os.environ['CHANNEL']]  # Channels to join
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET,
+            bot_id=BOT_ID,
+            owner_id=OWNER_ID,
+            prefix="!",
         )
-        # Add a whitelist of authorized users (lowercase usernames)
-        self.whitelist = ['noidea100']  # Add your specific usernames here
-
-        # load models from models directory
         self.model_load_dict = {
-            'preprocessor': './models/preprocessor.pkl',
-            'rand_forest': './models/random_forest.pkl',
-            'nn': './models/neural_network.pkl',
-            'extra_trees': './models/extra_trees.pkl',
-            'ensemble': './models/ensemble.pkl',
+            "random_forest" : "./models/random_forest.pkl",
+            "extra_trees" : "./models/extra_trees.pkl",
+            "neural_network" : "./models/neural_network.pkl",
+            "ensemble" : "./models/ensemble.pkl",
+            "preprocessor" : "./models/preprocessor.pkl"
         }
-
         self.models = {}
 
-        # Load models
         for model in self.model_load_dict.keys():
             model_path = self.model_load_dict[model]
             if os.path.exists(model_path):
@@ -41,61 +55,102 @@ class Bot(commands.Bot):
             else:
                 print(f"Model {model} not found at {model_path}")
 
-    async def event_ready(self):
-        """Called once when the bot goes online."""
-        print(f"Bot is online! | {self.nick}")
-        print(f"User ID: {self.user_id}")
 
-    async def event_message(self, message):
-        """Called when a message is sent in chat."""
-        # Ignore messages from the bot itself
-        if message.echo:
-            return
+    async def setup_hook(self) -> None:
+         # Add our component which contains our commands...
+         await self.add_component(MyComponent(self))
 
-        # Handle command processing
-        await self.handle_commands(message)
+         # Subscribe to read chat (event_message) from our channel as the bot...
+         # This creates and opens a websocket to Twitch EventSub...
+         subscription = eventsub.ChatMessageSubscription(broadcaster_user_id=OWNER_ID, user_id=BOT_ID)
+         await self.subscribe_websocket(payload=subscription)
 
-    @commands.command(name='predict')
-    async def prediction_command(self, ctx, *, args=None):
+         # Subscribe and listen to when a stream goes live
+         # For this example listen to our own stream...
+         subscription = eventsub.StreamOnlineSubscription(broadcaster_user_id=OWNER_ID)
+         await self.subscribe_websocket(payload=subscription)
+
+    async def add_token(self, token: str, refresh: str) -> twitchio.authentication.ValidateTokenPayload:
+        # Make sure to call super() as it will add the tokens interally and return us some data...
+        resp: twitchio.authentication.ValidateTokenPayload = await super().add_token(token, refresh)
+
+        # Store our tokens in a simple SQLite Database when they are authorized...
+        query = """
+        INSERT INTO tokens (user_id, token, refresh)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            token = excluded.token,
+            refresh = excluded.refresh;
         """
-        Predict match outcome using format:
-        !predict Team1, Team2, Map Name, Ban1, Ban2
+
+        async with self.token_database.acquire() as connection:
+            await connection.execute(query, (resp.user_id, token, refresh))
+
+        LOGGER.info("Added token to the database for user: %s", resp.user_id)
+        return resp
+
+    async def load_tokens(self, path: str | None = None) -> None:
+        # We don't need to call this manually, it is called in .login() from .start() internally...
+
+        async with self.token_database.acquire() as connection:
+            rows: list[sqlite3.Row] = await connection.fetchall("""SELECT * from tokens""")
+
+        for row in rows:
+            await self.add_token(row["token"], row["refresh"])
+
+    async def setup_database(self) -> None:
+        # Create our token table, if it doesn't exist
+        query = """CREATE TABLE IF NOT EXISTS tokens(user_id TEXT PRIMARY KEY, token TEXT NOT NULL, refresh TEXT NOT NULL)"""
+        async with self.token_database.acquire() as connection:
+            await connection.execute(query)
+
+    async def event_ready(self) -> None:
+        LOGGER.info("Successfully logged in as: %s", self.bot_id)
+
+
+class MyComponent(commands.Component):
+    def __init__(self, bot: Bot):
+        # Passing args is not required...
+        # We pass bot here as an example...
+        self.bot = bot
+
+    # We use a listener in our Component to display the messages received.
+    @commands.Component.listener()
+    async def event_message(self, payload: twitchio.ChatMessage) -> None:
+        print(f"[{payload.broadcaster.name}] - {payload.chatter.name}: {payload.text}")
+
+    @commands.command(aliases=["hello", "howdy", "hey"])
+    async def hi(self, ctx: commands.Context) -> None:
+        """Simple command that says hello!
+
+        !hi, !hello, !howdy, !hey
         """
-        # Check permissions - command only allowed for broadcaster, mods, or whitelisted users
-        if not (ctx.author.is_broadcaster or ctx.author.is_mod or ctx.author.name.lower() in self.whitelist):
+        await ctx.reply(f"Hello {ctx.chatter.mention}!")
+
+    @commands.command(aliases=["modellist"])
+    async def models(self, ctx: commands.Context) -> None:
+        """List all available models"""
+        model_list = "\n".join(self.bot.models.keys())
+        await ctx.send(f"Available models:\n{model_list}")
+
+    @commands.command()
+    @commands.is_elevated()
+    async def predict(self, ctx: commands.Context, *, content: str) -> None:
+        arguments = [argument.strip() for argument in content.split(",")]
+
+        model = "ensemble"
+
+        if len(arguments) not in [5, 6]:
+            await ctx.send("Format error. Format: predict team_1, team_2, "
+                           "map, ban_team_1, ban_team_2, model(optional)")
             return
 
-        if not args:
-            await ctx.send(
-                "Format: !predict Team1, Team2, Map Name, Ban1, Ban2")
-            return
+        if len(arguments) == 6:
+            team_1, team_2, map_name, ban_1, ban_2, model = arguments
+        else:
+            team_1, team_2, map_name, ban_1, ban_2 = arguments
 
-        # Split the arguments by comma and strip whitespace
-        parts = [part.strip() for part in args.split(',')]
-
-        # Check if we have the correct number of arguments
-        if len(parts) < 5:
-            await ctx.send(
-                "Not enough arguments! Format: !predict Team1, Team2, Map Name, Ban1, Ban2")
-            return
-
-        # Extract the values
-        team_1 = parts[0]
-        team_2 = parts[1]
-        map_name = parts[2]
-        ban_1 = parts[3]
-        ban_2 = parts[4]
-
-        # Optional: Get model name if provided as 6th argument
-        model = "ensemble"  # Default model
-        if len(parts) > 5:
-            model = parts[5]
-
-        # Now use these variables with your prediction model
-        await ctx.send(f"Predicting match: {team_1} vs {team_2} on {map_name}")
-        await ctx.send(f"Bans: {ban_1} / {ban_2} | Using model: {model}")
-
-        # Prepare the input data
         input_data = pd.DataFrame({
             'team_name': [team_1],
             'team_name_opp': [team_2],
@@ -106,11 +161,11 @@ class Bot(commands.Bot):
 
         try:
             # Preprocess the input data
-            preprocessor = self.models['preprocessor']
+            preprocessor = self.bot.models['preprocessor']
             input_transformed = preprocessor.transform(input_data)
 
             # Get the model and make prediction
-            selected_model = self.models[model]
+            selected_model = self.bot.models[model]
             prediction_prob = \
                 selected_model.predict_proba(input_transformed)[0][1]
 
@@ -124,11 +179,35 @@ class Bot(commands.Bot):
             message += f"• Map: {map_name} | Bans: {ban_1} & {ban_2}"
 
             await ctx.send(message)
-
         except Exception as e:
             await ctx.send(f"Error making prediction: {str(e)}")
 
 
-# Run the bot
-bot = Bot()
-bot.run()
+    @commands.Component.listener()
+    async def event_stream_online(self, payload: twitchio.StreamOnline) -> None:
+        # Event dispatched when a user goes live from the subscription we made above...
+
+        # Keep in mind we are assuming this is for ourselves
+        # others may not want your bot randomly sending messages...
+        await payload.broadcaster.send_message(
+            sender=self.bot.bot_id,
+            message=f"Hi... {payload.broadcaster}! You are live!",
+        )
+
+
+def main() -> None:
+    twitchio.utils.setup_logging(level=logging.INFO)
+
+    async def runner() -> None:
+        async with asqlite.create_pool("tokens.db") as tdb, Bot(token_database=tdb) as bot:
+            await bot.setup_database()
+            await bot.start()
+
+    try:
+        asyncio.run(runner())
+    except KeyboardInterrupt:
+        LOGGER.warning("Shutting down due to KeyboardInterrupt...")
+
+
+if __name__ == "__main__":
+    main()
