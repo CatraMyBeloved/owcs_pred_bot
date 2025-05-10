@@ -1,21 +1,20 @@
 import os
 import pickle
-
+from dotenv import load_dotenv
 import pandas as pd
 from twitchio.ext import commands
 import joblib
-
+load_dotenv()
 
 # Bot setup
 class Bot(commands.Bot):
     def __init__(self):
-        # Replace with your own credentials
         super().__init__(
-            token='YOUR_ACCESS_TOKEN',  # Your OAuth token
-            client_id='YOUR_CLIENT_ID',  # Your client ID
-            nick='YOUR_BOT_USERNAME',  # Your bot's username
-            prefix='pred:',  # Command prefix
-            initial_channels=['YOUR_CHANNEL']  # Channels to join
+            token=os.environ['TMI_TOKEN'],  # Your OAuth token
+            client_id=os.environ['CLIENT_ID'],  # Your client ID
+            nick=os.environ['BOT_NICK'],   # Your bot's username
+            prefix='!',                    # Command prefix
+            initial_channels=[os.environ['CHANNEL']]  # Channels to join
         )
         # load models from models directory
         self.model_load_dict = {
@@ -37,6 +36,17 @@ class Bot(commands.Bot):
             else:
                 print(f"Model {model} not found at {model_path}")
 
+
+
+    def is_authorized(self, username):
+        """Check if a user is authorized to use the bot"""
+        # Always authorize moderators
+        if username.is_mod:
+            return True
+
+        # Check whitelist for regular users
+        return username.name.lower() in self.whitelist
+
     async def event_ready(self):
         """Called once when the bot goes online."""
         print(f"Bot is online! | {self.nick}")
@@ -52,35 +62,73 @@ class Bot(commands.Bot):
         await self.handle_commands(message)
 
     @commands.command(name='predict')
-    async def prediction_command(self, ctx, team_1: str, team_2: str, map: str,
-                            ban_1: str, ban_2: str, model: str = 'ensemble'):
-
-        if not all([team_1, team_2, map, ban_1, ban_2]):
-            await ctx.send("Please provide all required arguments.")
+    async def prediction_command(self, ctx, *, args=None):
+        """
+        Predict match outcome using format:
+        !predict Team1, Team2, Map Name, Ban1, Ban2
+        """
+        if not args:
+            await ctx.send(
+                "Format: !predict Team1, Team2, Map Name, Ban1, Ban2")
             return
 
-        # Check if the model is loaded
-        if model not in self.models:
-            await ctx.send(f"Model {model} is not loaded.")
+        # Split the arguments by comma and strip whitespace
+        parts = [part.strip() for part in args.split(',')]
+
+        # Check if we have the correct number of arguments
+        if len(parts) < 5:
+            await ctx.send(
+                "Not enough arguments! Format: !predict Team1, Team2, Map Name, Ban1, Ban2")
             return
+
+        # Extract the values
+        team_1 = parts[0]
+        team_2 = parts[1]
+        map_name = parts[2]
+        ban_1 = parts[3]
+        ban_2 = parts[4]
+
+        # Optional: Get model name if provided as 6th argument
+        model = "ensemble"  # Default model
+        if len(parts) > 5:
+            model = parts[5]
+
+        # Now use these variables with your prediction model
+        await ctx.send(f"Predicting match: {team_1} vs {team_2} on {map_name}")
+        await ctx.send(f"Bans: {ban_1} / {ban_2} | Using model: {model}")
 
         # Prepare the input data
         input_data = pd.DataFrame({
-            'team_name': team_1,
-            'team_name_opp': team_2,
-            'map_name': map,
-            'banned_hero': ban_1,
-            'banned_hero_opp': ban_2
+            'team_name': [team_1],
+            'team_name_opp': [team_2],
+            'map_name': [map_name],
+            'banned_hero': [ban_1],
+            'banned_hero_opp': [ban_2]
         })
 
-        # Preprocess the input data
-        preprocessor = self.models['preprocessor']
-        input_transformed = preprocessor.transform(input_data)
-        # Get the model
-        model = self.models[model]
+        try:
+            # Preprocess the input data
+            preprocessor = self.models['preprocessor']
+            input_transformed = preprocessor.transform(input_data)
 
-        await ctx.send(f'Hello {ctx.author.name}!')
+            # Get the model and make prediction
+            selected_model = self.models[model]
+            prediction_prob = \
+            selected_model.predict_proba(input_transformed)[0][1]
 
+            # Determine winner and confidence
+            winner = team_1 if prediction_prob > 0.5 else team_2
+            confidence = max(prediction_prob, 1 - prediction_prob)
+
+            # Format the prediction message
+            message = f"Prediction using {model} model:\n"
+            message += f"• {winner} is predicted to win ({confidence:.2%} confidence)\n"
+            message += f"• Map: {map_name} | Bans: {ban_1} & {ban_2}"
+
+            await ctx.send(message)
+
+        except Exception as e:
+            await ctx.send(f"Error making prediction: {str(e)}")
 
 # Run the bot
 bot = Bot()
