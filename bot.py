@@ -4,7 +4,9 @@ from dotenv import load_dotenv
 import pandas as pd
 from twitchio.ext import commands
 import joblib
+
 load_dotenv()
+
 
 # Bot setup
 class Bot(commands.Bot):
@@ -12,10 +14,13 @@ class Bot(commands.Bot):
         super().__init__(
             token=os.environ['TMI_TOKEN'],  # Your OAuth token
             client_id=os.environ['CLIENT_ID'],  # Your client ID
-            nick=os.environ['BOT_NICK'],   # Your bot's username
-            prefix='!',                    # Command prefix
+            nick=os.environ['BOT_NICK'],  # Your bot's username
+            prefix='!',  # Command prefix
             initial_channels=[os.environ['CHANNEL']]  # Channels to join
         )
+        # Add a whitelist of authorized users (lowercase usernames)
+        self.whitelist = ['noidea100']  # Add your specific usernames here
+
         # load models from models directory
         self.model_load_dict = {
             'preprocessor': './models/preprocessor.pkl',
@@ -35,17 +40,6 @@ class Bot(commands.Bot):
                 print(f"Loaded model {model} from {model_path}")
             else:
                 print(f"Model {model} not found at {model_path}")
-
-
-
-    def is_authorized(self, username):
-        """Check if a user is authorized to use the bot"""
-        # Always authorize moderators
-        if username.is_mod:
-            return True
-
-        # Check whitelist for regular users
-        return username.name.lower() in self.whitelist
 
     async def event_ready(self):
         """Called once when the bot goes online."""
@@ -67,6 +61,10 @@ class Bot(commands.Bot):
         Predict match outcome using format:
         !predict Team1, Team2, Map Name, Ban1, Ban2
         """
+        # Check permissions - command only allowed for broadcaster, mods, or whitelisted users
+        if not (ctx.author.is_broadcaster or ctx.author.is_mod or ctx.author.name.lower() in self.whitelist):
+            return
+
         if not args:
             await ctx.send(
                 "Format: !predict Team1, Team2, Map Name, Ban1, Ban2")
@@ -114,7 +112,7 @@ class Bot(commands.Bot):
             # Get the model and make prediction
             selected_model = self.models[model]
             prediction_prob = \
-            selected_model.predict_proba(input_transformed)[0][1]
+                selected_model.predict_proba(input_transformed)[0][1]
 
             # Determine winner and confidence
             winner = team_1 if prediction_prob > 0.5 else team_2
@@ -129,6 +127,7 @@ class Bot(commands.Bot):
 
         except Exception as e:
             await ctx.send(f"Error making prediction: {str(e)}")
+
 
 # Run the bot
 bot = Bot()
