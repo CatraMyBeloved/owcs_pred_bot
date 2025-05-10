@@ -1,6 +1,9 @@
 import os
 import pickle
+
+import pandas as pd
 from twitchio.ext import commands
+import joblib
 
 
 # Bot setup
@@ -29,7 +32,7 @@ class Bot(commands.Bot):
         for model in self.model_load_dict.keys():
             model_path = self.model_load_dict[model]
             if os.path.exists(model_path):
-                self.models[model] = pickle.load(model_path)
+                self.models[model] = joblib.load(model_path)
                 print(f"Loaded model {model} from {model_path}")
             else:
                 print(f"Model {model} not found at {model_path}")
@@ -49,22 +52,34 @@ class Bot(commands.Bot):
         await self.handle_commands(message)
 
     @commands.command(name='predict')
-    async def hello_command(self, ctx, team_1: str, team_2: str, map: str,
-                            ban_1: str, ban_2: str):
+    async def prediction_command(self, ctx, team_1: str, team_2: str, map: str,
+                            ban_1: str, ban_2: str, model: str = 'ensemble'):
 
         if not all([team_1, team_2, map, ban_1, ban_2]):
             await ctx.send("Please provide all required arguments.")
             return
 
+        # Check if the model is loaded
+        if model not in self.models:
+            await ctx.send(f"Model {model} is not loaded.")
+            return
+
+        # Prepare the input data
+        input_data = pd.DataFrame({
+            'team_name': team_1,
+            'team_name_opp': team_2,
+            'map_name': map,
+            'banned_hero': ban_1,
+            'banned_hero_opp': ban_2
+        })
+
+        # Preprocess the input data
+        preprocessor = self.models['preprocessor']
+        input_transformed = preprocessor.transform(input_data)
+        # Get the model
+        model = self.models[model]
 
         await ctx.send(f'Hello {ctx.author.name}!')
-
-    @commands.command(name='dice')
-    async def dice_command(self, ctx):
-        """Rolls a dice and responds with a random number between 1 and 6"""
-        import random
-        num = random.randint(1, 6)
-        await ctx.send(f'{ctx.author.name} rolled a {num}!')
 
 
 # Run the bot
